@@ -76,18 +76,7 @@ if [[ $target_platform =~ emscripten.* ]]; then
   # else
     echo "set(CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s USE_PTHREADS=0 -s ALLOW_MEMORY_GROWTH=1 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
     echo "set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s USE_PTHREADS=0 -s ALLOW_MEMORY_GROWTH=1 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
-    # -lembind is intentionally NOT added here: it used to be forced onto
-    # every wasm32 executable's CMAKE_EXE_LINKER_FLAGS unconditionally,
-    # but embind's own runtime initializes its type registry (registering
-    # "void", "bool", etc) once per module that links it -- forcing it
-    # onto the main executable TOO, on top of any SIDE_MODULE .so that
-    # already links it for its own embind usage (e.g. RoboStack's
-    # wasm_cpp package), makes both copies register the same types and
-    # throws "BindingError: Cannot register type 'void' twice" at
-    # startup. A package that genuinely needs embind directly in its own
-    # executable (not just transitively via a side module) should add
-    # -lembind itself.
-    echo "set(CMAKE_EXE_LINKER_FLAGS \"-sMAIN_MODULE=1 -sASSERTIONS=1 -fexceptions -sWASM_BIGINT -s USE_PTHREADS=0 -sALLOW_MEMORY_GROWTH=1 -L$SRC_DIR/build -L$PREFIX/lib\")  # remove SIDE_MODULE from exe linker flags">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+    echo "set(CMAKE_EXE_LINKER_FLAGS \"-sMAIN_MODULE=1 -sASSERTIONS=1 -fexceptions -lembind -sWASM_BIGINT -s USE_PTHREADS=0 -sALLOW_MEMORY_GROWTH=1 -L$SRC_DIR/build -L$PREFIX/lib\")  # remove SIDE_MODULE from exe linker flags">> $SRC_DIR/__vinca_shared_lib_patch.cmake
   # fi
 
   export BUILD_TYPE="Debug"
