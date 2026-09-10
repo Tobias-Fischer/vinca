@@ -59,9 +59,11 @@ def make_snapshot_distro(monkeypatch):
 
     snapshot_xml_by_url = {
         "https://raw.githubusercontent.com/example/snapshot-package-release/"
-        "release/rolling/snapshot_package/1.0.0-1/package.xml": (SNAPSHOT_PACKAGE_XML),
+        "refs/tags/release/rolling/snapshot_package/1.0.0-1/package.xml": (
+            SNAPSHOT_PACKAGE_XML
+        ),
         "https://raw.githubusercontent.com/example/snapshot-dependency-release/"
-        "release/rolling/snapshot_dependency/1.0.0-1/package.xml": (
+        "refs/tags/release/rolling/snapshot_dependency/1.0.0-1/package.xml": (
             SNAPSHOT_DEPENDENCY_XML
         ),
     }
