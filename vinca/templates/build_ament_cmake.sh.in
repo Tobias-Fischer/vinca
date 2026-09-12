@@ -101,17 +101,58 @@ if [[ $target_platform =~ emscripten.* ]]; then
   # keeping the rest of the toolchain's own base flags) is the only place
   # that actually works -- back to this toolchain's other documented
   # default, the older JS-based mechanism, which Asyncify does handle.
-  export EMCC_CFLAGS="${EM_FORGE_CFLAGS_BASE:-}"
-  echo "set(CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
-  echo "set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  # ZENOH_EMSCRIPTEN: rmw_zenoh_pico's own patch (ros-rolling-rmw-zenoh-pico.patch)
+  # guards its wasm32-specific "ws/" locator scheme (vs. native's "tcp/") behind
+  # `#if defined(ZENOH_EMSCRIPTEN)` -- nothing previously defined that macro
+  # anywhere in this build, so it was silently always taking the native "tcp/"
+  # branch even on this target, and a browser sandbox has no raw TCP sockets
+  # (zenoh-pico here is built with Z_FEATURE_LINK_WS instead, dialing only
+  # "ws/" locators) -- confirmed via a real socket(AF_INET, SOCK_STREAM,
+  # IPPROTO_TCP) call reaching -lwebsocket.js's POSIX-socket-over-WebSocket
+  # shim and failing, instead of a native WebSocket connection ever being
+  # attempted. Defined project-wide here (not just for rmw_zenoh_pico) since
+  # zenoh-pico's own sources may rely on the same macro for analogous checks.
+  export EMCC_CFLAGS="${EM_FORGE_CFLAGS_BASE:-} -DZENOH_EMSCRIPTEN"
+
+  # Asyncify + dynamic linking (MAIN_MODULE/SIDE_MODULE) needs each *individual*
+  # module -- not just the final browser_demo executable -- to separately know
+  # which of its OWN outgoing cross-module calls might suspend. Binaryen's
+  # Asyncify pass runs once per module at that module's own build time, and
+  # for any call it wasn't told about, it emits a hard `unreachable` trap
+  # guard right after the call site instead of silently letting the callee's
+  # state change propagate -- this is a real, narrow trap (confirmed by
+  # instrumenting the generated JS glue to log Asyncify.state around every
+  # import and disassembling the exact trap site with wasm-objdump), not the
+  # "give it more stack" or "arbitrary libc call" failure modes that looked
+  # plausible earlier. Passing -s ASYNCIFY_IMPORTS=<name> on the *browser_demo*
+  # link line alone (matching upstream emscripten examples) only satisfies the
+  # JS-side "was this change expected" check; every module that itself calls
+  # one of these names needs the same name in ITS OWN link flags too, or the
+  # wasm-level guard still fires. The list below is the closure discovered by
+  # running the rclc demo end-to-end and adding exactly the names the crash
+  # trace named next, each time: node/publisher/timer creation
+  # (rclc_node_init_default, rcl_node_init, rmw_create_node, z_open,
+  # z_session_drop, z_liveliness_declare_token, rclc_publisher_init_default,
+  # rcl_publisher_init, rmw_create_publisher, z_declare_publisher) and the
+  # non-threaded rmw_wait poll loop plus publish path (rclc_executor_spin_some,
+  # rcl_wait, rmw_wait, zp_read, zp_send_keep_alive, z_sleep_ms, rcl_timer_call,
+  # rcl_publish, rmw_publish, z_publisher_put). Applied to every package here
+  # (rather than only the specific packages that actually define each of these
+  # functions) since an unused entry is a harmless no-op and this avoids
+  # per-package template logic; grow this list the same way (rebuild, read the
+  # next named crash, add it here) if a not-yet-exercised path (subscriptions,
+  # services, rclcpp/rclpy's own call chains) hits the same trap.
+  VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS="rclc_node_init_default,rcl_node_init,rmw_create_node,z_open,z_session_drop,z_liveliness_declare_token,rclc_publisher_init_default,rcl_publisher_init,rmw_create_publisher,z_declare_publisher,rclc_executor_spin_some,rcl_wait,rmw_wait,zp_read,zp_send_keep_alive,z_sleep_ms,rcl_timer_call,rcl_publish,rmw_publish,z_publisher_put"
+  echo "set(CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
   # CMake's MODULE library type (add_library(... MODULE), what
   # pybind11_add_module() uses for Python C extensions e.g. rclpy's
   # _rclpy_pybind11) is a distinct target type from SHARED and reads its
   # own CMAKE_SHARED_MODULE_CREATE_*_FLAGS variables -- keep it consistent
   # with the SHARED flags above.
-  echo "set(CMAKE_SHARED_MODULE_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
-  echo "set(CMAKE_SHARED_MODULE_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
-  echo "set(CMAKE_EXE_LINKER_FLAGS \"-sMAIN_MODULE=1 -sASSERTIONS=1 -fexceptions -lembind -sWASM_BIGINT -sALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -L$SRC_DIR/build -L$PREFIX/lib\")  # remove SIDE_MODULE from exe linker flags">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_SHARED_MODULE_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_SHARED_MODULE_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_EXE_LINKER_FLAGS \"-sMAIN_MODULE=1 -sASSERTIONS=1 -fexceptions -lembind -sWASM_BIGINT -sALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS -L$SRC_DIR/build -L$PREFIX/lib\")  # remove SIDE_MODULE from exe linker flags">> $SRC_DIR/__vinca_shared_lib_patch.cmake
 
   # A message package's *Config.cmake only exports find_dependency() calls
   # for what its own package.xml/CMakeLists.txt actually declares -- it has
