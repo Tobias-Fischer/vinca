@@ -69,38 +69,34 @@ if [[ $target_platform =~ emscripten.* ]]; then
   echo "set(CMAKE_STRIP FALSE)  # used by default in pybind11 on .so modules">> $SRC_DIR/__vinca_shared_lib_patch.cmake
   echo "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)  # fixes an error where numpy header files are not found correctly">> $SRC_DIR/__vinca_shared_lib_patch.cmake
 
-  # No real pthreads here (deliberately -- see history below). Instead,
-  # Asyncify lets the one genuinely blocking call in this stack (rmw_wait,
-  # which polls zenoh-pico's WS transport) cooperatively yield back to the
-  # browser's JS event loop instead of really blocking -- that's enough for
-  # wall-clock time (and incoming WebSocket messages) to advance while a
-  # "blocking" wait is outstanding, without needing an OS-level thread.
+  # No real pthreads here, and (as of 2026-09-13) no Asyncify either --
+  # see git history on this file for the full saga of both. Asyncify was
+  # added to let rmw_wait's poll loop cooperatively yield instead of really
+  # blocking, without needing real OS threads -- but combining Asyncify
+  # with runtime dlopen() of a SIDE_MODULE turned out to be a real,
+  # unresolved Emscripten/Binaryen limitation (emscripten-core/emscripten
+  # #13049, #15594; pyodide/pyodide#4087 reports the identical crash
+  # against Pyodide's own CPython fork), discovered while trying to get
+  # rclpy dlopen()'d into a JupyterLite kernel. Real pthreads have their
+  # own, separate dealbreaker: they require wasm --shared-memory, which is
+  # viral (every module dlopen'd into an eagerly-linked host must also be
+  # pthreads/shared-memory or linking fails), and a genuinely blocking wait
+  # on a thread that also needs to service a message loop (e.g.
+  # JupyterLite's xeus-python kernel) just deadlocks outright.
   #
-  # Real pthreads (USE_PTHREADS=1) were tried instead of this and reverted.
-  # They do make a blocking std::condition_variable/rmw wait set actually
-  # wake up, but they require wasm --shared-memory, which is viral: every
-  # module dlopen'd into an eagerly-linked host must also be pthreads/
-  # shared-memory or linking fails ("mismatch in shared state of memory"),
-  # and worse, a genuinely blocking wait on a thread that also needs to
-  # service a message loop (e.g. JupyterLite's xeus-python kernel) just
-  # deadlocks outright -- there's nothing left free to deliver the wakeup.
-  # Asyncify avoids needing real concurrency at all for this.
+  # The actual fix is architectural, not a build flag: rmw_wait (see this
+  # project's own rmw_zenoh_pico patch) already takes a genuinely
+  # non-blocking, single-poll path whenever the requested wait timeout is
+  # exactly zero -- callers that want to keep checking for readiness
+  # periodically should call with a zero timeout in a loop and drive the
+  # "wait a bit, then check again" cadence themselves (e.g. rclpy callers:
+  # `rclpy.spin_once(node, timeout_sec=0)` inside a Python `asyncio.sleep()`
+  # loop, bridged to the browser's JS event loop via pyjs's webloop, not
+  # Asyncify -- exactly the pattern ros2wasm's own published JupyterLite
+  # demo uses). This matches Tobias-Fischer/ros-humble's own working
+  # emscripten-wasm32 port, which also builds with no pthreads and no
+  # Asyncify.
   #
-  # Asyncify is also flatly incompatible with wasm's native
-  # exception-handling proposal: binaryen's Asyncify pass hard-crashes
-  # ("UNREACHABLE executed ... Asyncify.cpp") on any object file compiled
-  # with wasm EH instructions, rather than just producing a slower build.
-  # The emscripten-forge toolchain package's own activation script
-  # (etc/conda/activate.d/activate_emscripten_emscripten-wasm32.sh) sets
-  # EMCC_CFLAGS="... -sSUPPORT_LONGJMP=wasm -fwasm-exceptions" globally, so
-  # *every* em++/emcc invocation gets wasm EH by default regardless of what
-  # CMake is told -- confirmed by tracing emcc.py: -fwasm-exceptions is the
-  # only thing that sets settings.WASM_EXCEPTIONS=1, and there's no
-  # -fno-wasm-exceptions counter-flag it recognizes to un-set it again.
-  # Overriding EMCC_CFLAGS here (dropping just the exception-handling part,
-  # keeping the rest of the toolchain's own base flags) is the only place
-  # that actually works -- back to this toolchain's other documented
-  # default, the older JS-based mechanism, which Asyncify does handle.
   # ZENOH_EMSCRIPTEN: rmw_zenoh_pico's own patch (ros-rolling-rmw-zenoh-pico.patch)
   # guards its wasm32-specific "ws/" locator scheme (vs. native's "tcp/") behind
   # `#if defined(ZENOH_EMSCRIPTEN)` -- nothing previously defined that macro
@@ -112,47 +108,37 @@ if [[ $target_platform =~ emscripten.* ]]; then
   # shim and failing, instead of a native WebSocket connection ever being
   # attempted. Defined project-wide here (not just for rmw_zenoh_pico) since
   # zenoh-pico's own sources may rely on the same macro for analogous checks.
-  export EMCC_CFLAGS="${EM_FORGE_CFLAGS_BASE:-} -DZENOH_EMSCRIPTEN"
+  #
+  # NOTE (2026-09-13): this used to also override EMCC_CFLAGS to drop
+  # -fwasm-exceptions (replacing the toolchain's own native wasm
+  # exception-handling default with the older JS-based mechanism), because
+  # Binaryen's Asyncify pass hard-crashed on native wasm-EH instructions.
+  # Now that Asyncify is dropped entirely (see the block above), that
+  # override is not just unnecessary but actively harmful: it left every
+  # package here compiling with *neither* explicit exception-handling flag,
+  # which falls back to Emscripten's own default (the older JS-based
+  # mechanism) -- a genuine mismatch against the *stock*, unmodified
+  # xeus-python package this project now dlopen()'s into (built with the
+  # toolchain's real default, -fwasm-exceptions, since nothing patches it).
+  # That mismatch surfaced as "Dynamic linking error: cannot resolve symbol
+  # invoke_i" the first time a C++ exception-handling code path in a
+  # dlopen()'d ROS package (rmw_zenoh_pico) needed a JS-based invoke_*
+  # wrapper stock xeus-python's own MAIN_MODULE was never built to provide.
+  # Appending to whatever EMCC_CFLAGS the toolchain's own activation script
+  # already set (not overriding it) keeps -fwasm-exceptions intact, matching
+  # stock xeus-python exactly.
+  export EMCC_CFLAGS="${EMCC_CFLAGS:-} -DZENOH_EMSCRIPTEN"
 
-  # Asyncify + dynamic linking (MAIN_MODULE/SIDE_MODULE) needs each *individual*
-  # module -- not just the final browser_demo executable -- to separately know
-  # which of its OWN outgoing cross-module calls might suspend. Binaryen's
-  # Asyncify pass runs once per module at that module's own build time, and
-  # for any call it wasn't told about, it emits a hard `unreachable` trap
-  # guard right after the call site instead of silently letting the callee's
-  # state change propagate -- this is a real, narrow trap (confirmed by
-  # instrumenting the generated JS glue to log Asyncify.state around every
-  # import and disassembling the exact trap site with wasm-objdump), not the
-  # "give it more stack" or "arbitrary libc call" failure modes that looked
-  # plausible earlier. Passing -s ASYNCIFY_IMPORTS=<name> on the *browser_demo*
-  # link line alone (matching upstream emscripten examples) only satisfies the
-  # JS-side "was this change expected" check; every module that itself calls
-  # one of these names needs the same name in ITS OWN link flags too, or the
-  # wasm-level guard still fires. The list below is the closure discovered by
-  # running the rclc demo end-to-end and adding exactly the names the crash
-  # trace named next, each time: node/publisher/timer creation
-  # (rclc_node_init_default, rcl_node_init, rmw_create_node, z_open,
-  # z_session_drop, z_liveliness_declare_token, rclc_publisher_init_default,
-  # rcl_publisher_init, rmw_create_publisher, z_declare_publisher) and the
-  # non-threaded rmw_wait poll loop plus publish path (rclc_executor_spin_some,
-  # rcl_wait, rmw_wait, zp_read, zp_send_keep_alive, z_sleep_ms, rcl_timer_call,
-  # rcl_publish, rmw_publish, z_publisher_put). Applied to every package here
-  # (rather than only the specific packages that actually define each of these
-  # functions) since an unused entry is a harmless no-op and this avoids
-  # per-package template logic; grow this list the same way (rebuild, read the
-  # next named crash, add it here) if a not-yet-exercised path (subscriptions,
-  # services, rclcpp/rclpy's own call chains) hits the same trap.
-  VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS="rclc_node_init_default,rcl_node_init,rmw_create_node,z_open,z_session_drop,z_liveliness_declare_token,rclc_publisher_init_default,rcl_publisher_init,rmw_create_publisher,z_declare_publisher,rclc_executor_spin_some,rcl_wait,rmw_wait,zp_read,zp_send_keep_alive,z_sleep_ms,rcl_timer_call,rcl_publish,rmw_publish,z_publisher_put"
-  echo "set(CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
-  echo "set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
   # CMake's MODULE library type (add_library(... MODULE), what
   # pybind11_add_module() uses for Python C extensions e.g. rclpy's
   # _rclpy_pybind11) is a distinct target type from SHARED and reads its
   # own CMAKE_SHARED_MODULE_CREATE_*_FLAGS variables -- keep it consistent
   # with the SHARED flags above.
-  echo "set(CMAKE_SHARED_MODULE_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
-  echo "set(CMAKE_SHARED_MODULE_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
-  echo "set(CMAKE_EXE_LINKER_FLAGS \"-sMAIN_MODULE=1 -sASSERTIONS=1 -fexceptions -lembind -sWASM_BIGINT -sALLOW_MEMORY_GROWTH=1 -sASYNCIFY -s ASYNCIFY_STACK_SIZE=24576 -s ASYNCIFY_IMPORTS=$VINCA_EMSCRIPTEN_ASYNCIFY_IMPORTS -L$SRC_DIR/build -L$PREFIX/lib\")  # remove SIDE_MODULE from exe linker flags">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_SHARED_MODULE_CREATE_C_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_SHARED_MODULE_CREATE_CXX_FLAGS \"-s ASSERTIONS=1 -s SIDE_MODULE=1 -sWASM_BIGINT -s ALLOW_MEMORY_GROWTH=1 \")">> $SRC_DIR/__vinca_shared_lib_patch.cmake
+  echo "set(CMAKE_EXE_LINKER_FLAGS \"-sMAIN_MODULE=1 -sASSERTIONS=1 -fexceptions -lembind -sWASM_BIGINT -sALLOW_MEMORY_GROWTH=1 -L$SRC_DIR/build -L$PREFIX/lib\")  # remove SIDE_MODULE from exe linker flags">> $SRC_DIR/__vinca_shared_lib_patch.cmake
 
   # A message package's *Config.cmake only exports find_dependency() calls
   # for what its own package.xml/CMakeLists.txt actually declares -- it has
