@@ -56,8 +56,10 @@ if [[ "$CONDA_BUILD_CROSS_COMPILATION" == "1" ]]; then
 fi
 echo "DIAG CONDA_BUILD_CROSS_COMPILATION=${CONDA_BUILD_CROSS_COMPILATION:-<unset>}"
 echo "DIAG PYTHONPATH=${PYTHONPATH:-<unset>}"
-echo "DIAG ls \$PREFIX/lib/python${ROS_PYTHON_VERSION}/site-packages (ament*):"
-ls "$PREFIX/lib/python${ROS_PYTHON_VERSION}/site-packages" 2>&1 | grep -i ament || echo "DIAG (no ament* entries, or dir missing)"
+echo "DIAG ls \$PREFIX/lib/ :"
+ls "$PREFIX/lib/" 2>&1 || echo "DIAG (\$PREFIX/lib missing entirely)"
+echo "DIAG find \$PREFIX -iname 'ament_package*' :"
+find "$PREFIX" -iname "ament_package*" 2>&1 || echo "DIAG (find itself failed)"
 echo "DIAG \$PYTHON_EXECUTABLE -c import ament_package (PYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}):"
 "$PYTHON_EXECUTABLE" -c "import ament_package; print('DIAG import OK:', ament_package.__file__)" 2>&1 || true
 
