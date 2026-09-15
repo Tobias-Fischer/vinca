@@ -36,6 +36,25 @@ echo "Using Python ${ROS_PYTHON_VERSION}"
 
 export ROS_DISTRO="@(ros_distro)"
 
+# Some packages' own CMake configure step (ament_cmake_core's package_templates/
+# templates_2_cmake.py is the confirmed case, importing `ament_package`) needs a
+# pure-Python host tool available to $BUILD_PREFIX's own (native) python during
+# cross-compilation -- the only python that can actually execute at configure
+# time. That tool is only ever declared as a `host` dependency (installed into
+# $PREFIX, the target env), so $BUILD_PREFIX's python has no way to see it on
+# its own, confirmed via a real "ModuleNotFoundError: No module named
+# 'ament_package'" configure failure. Rather than needing every such tool
+# separately declared as a native `build:`-time conda dependency too (which
+# for a target platform with no native builds published anywhere, like
+# emscripten-wasm32, would need its own build_platform-labeled mirror package
+# per tool -- fragile and easy to miss one), just point $BUILD_PREFIX's python
+# directly at $PREFIX's site-packages: every such tool is pure Python (no
+# compiled extension), so reading its .py files with a different, native
+# python interpreter is safe.
+if [[ "$CONDA_BUILD_CROSS_COMPILATION" == "1" ]]; then
+  export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$PREFIX/lib/python${ROS_PYTHON_VERSION}/site-packages"
+fi
+
 # see https://github.com/conda-forge/cross-python-feedstock/issues/24
 if [[ "$CONDA_BUILD_CROSS_COMPILATION" == "1" ]]; then
   find $PREFIX/lib/cmake -type f -exec sed -i "s~\${_IMPORT_PREFIX}/lib/python${ROS_PYTHON_VERSION}/site-packages~${BUILD_PREFIX}/lib/python${ROS_PYTHON_VERSION}/site-packages~g" {} + || true
