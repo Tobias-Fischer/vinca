@@ -203,17 +203,6 @@ def get_setup_pixi_step(
             "log-level": "v",
             "frozen": "true",
         },
-        # pixi clones git dependencies (e.g. vinca) into its cache, which setup-pixi
-        # saves. git's background auto-maintenance can leave a lock file in such a
-        # clone ("hardlink different from source at .../commit-graph-chain.lock"),
-        # which then breaks every later run restoring that cache.
-        "env": {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_KEY_0": "maintenance.auto",
-            "GIT_CONFIG_VALUE_0": "false",
-            "GIT_CONFIG_KEY_1": "gc.auto",
-            "GIT_CONFIG_VALUE_1": "0",
-        },
     }
 
 
