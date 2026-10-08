@@ -61,6 +61,13 @@ def test_unix_pipeline_sets_up_pixi(tmp_path):
             "log-level": "v",
             "frozen": "true",
         },
+        "env": {
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "maintenance.auto",
+            "GIT_CONFIG_VALUE_0": "false",
+            "GIT_CONFIG_KEY_1": "gc.auto",
+            "GIT_CONFIG_VALUE_1": "0",
+        },
     }
 
 
