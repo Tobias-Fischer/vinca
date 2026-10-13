@@ -20,6 +20,7 @@ from vinca.main import (
     read_vinca_yaml,
 )
 from vinca.pipeline import batch_stages, get_all_ancestors, get_skip_existing
+from vinca.utils import built_for_distro
 from vinca.utils import (
     NoAliasDumper,
     add_test_requirements,
@@ -123,6 +124,7 @@ def add_additional_recipes(args):
                     pkg["name"] == name
                     and pkg["version"] == version
                     and pkg["build_number"] == bnumber
+                    and built_for_distro(pkg, vinca_conf["ros_distro"])
                 ):
                     skip = True
                     print(f"{name}=={version}=={bnumber} already exists. Skipping.")
