@@ -247,7 +247,7 @@ def _adjust_requirements(requirements: Requirements, package_prefix: str) -> Non
 
     if f"{package_prefix}-pybind11-vendor" in requirements["host"]:
         requirements["host"].append("pybind11")
-    for dependency in ("pybind11", "qt-main"):
+    for dependency in ("pybind11", "qt-main", "qt6-main"):
         if dependency in requirements["host"]:
             requirements["build"].append(
                 {"if": "build_platform != target_platform", "then": [dependency]}

@@ -28,6 +28,8 @@ SYSTEM_PACKAGES = {
     "cyclonedds": ["ros2-cyclonedds"],
     "mimick_vendor": ["ros2-mimick-vendor"],
     "pybind11_vendor": ["ros2-pybind11-vendor"],
+    "qtbase5-dev": ["qt-main"],
+    "qt6-base-dev": ["qt6-main"],
     "rosidl_default_generators": ["ros2-rosidl-default-generators"],
 }
 
@@ -261,6 +263,17 @@ def test_pybind11_vendor_pulls_in_pybind11():
     assert {
         "if": "build_platform != target_platform",
         "then": ["pybind11"],
+    } in output["requirements"]["build"]
+
+
+@pytest.mark.parametrize("key, qt", [("qtbase5-dev", "qt-main"), ("qt6-base-dev", "qt6-main")])
+def test_qt_is_also_a_build_dependency_when_cross_compiling(key, qt):
+    output = build("demo", depends=[("build_depend", key)])
+
+    assert qt in output["requirements"]["host"]
+    assert {
+        "if": "build_platform != target_platform",
+        "then": [qt],
     } in output["requirements"]["build"]
 
 
